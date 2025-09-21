@@ -12,4 +12,5 @@ dependencies = [
     "streamlit>=1.41.0",
     "pydantic>=2.10.6",
     "tenacity>=9.0.0",
+    "xai-sdk>=1.2.0",
 ]

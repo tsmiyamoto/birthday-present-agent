@@ -1,77 +1,111 @@
-"""Tool that summarizes X profiles via Grok."""
+"""Tool that summarizes X profiles via the xAI SDK Live Search."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from typing import Any, Dict
+import re
+from typing import Optional
 
-import httpx
 from google.adk.tools import ToolContext
 from google.genai import types
 from tenacity import AsyncRetrying, RetryError, stop_after_attempt, wait_exponential
+from xai_sdk import AsyncClient
+from xai_sdk.chat import system, user
+from xai_sdk.search import SearchParameters, x_source
 
-GROK_API_URL = os.getenv("GROK_API_URL", "https://api.x.ai/v1/chat/completions")
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-2-latest")
+_CLIENT_LOCK = asyncio.Lock()
+_CLIENT: Optional[AsyncClient] = None
 
 
-async def _call_grok(payload: Dict[str, Any]) -> Dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {os.getenv('GROK_API_KEY', '')}",
-        "Content-Type": "application/json",
-    }
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6)
-    ):
-        with attempt:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(GROK_API_URL, headers=headers, json=payload)
-                response.raise_for_status()
-                return response.json()
-    raise RuntimeError("Unreachable")
+async def _get_client() -> AsyncClient:
+    """Create or return a cached AsyncClient instance."""
+
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+
+    async with _CLIENT_LOCK:
+        if _CLIENT is None:
+            api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+            if not api_key:
+                raise RuntimeError("XAI_API_KEY is not set. Add it to your .env file (fallback to GROK_API_KEY).")
+            _CLIENT = AsyncClient(api_key=api_key)
+    return _CLIENT
+
+
+def _extract_handle(x_url: str) -> Optional[str]:
+    """Return the X handle (without @) if present in the URL."""
+
+    match = re.search(r"(?:x|twitter)\.com/([^/?#]+)", x_url)
+    if not match:
+        return None
+    handle = match.group(1)
+    handle = handle.strip("@")
+    if handle:
+        return handle
+    return None
 
 
 async def fetch_social_profile(x_url: str, tool_context: ToolContext) -> str:
-    """Use Grok to infer profile details from an X link.
+    """Use xAI Grok Live Search to infer profile details from an X link."""
 
-    Args:
-        x_url: X(旧Twitter)のプロフィールまたは投稿URL。
-        tool_context: ADKツール実行コンテキスト。
+    client = await _get_client()
 
-    Returns:
-        JSON文字列。人物像の推測と引用文を含む。
-    """
-    api_key = os.getenv("GROK_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROK_API_KEY is not set. Add it to your .env file.")
+    handle = _extract_handle(x_url)
+    search_sources = [
+        x_source(included_x_handles=[handle]) if handle else x_source(),
+    ]
 
-    prompt = (
-        "次のXプロフィール/投稿URLから公開情報のみを用いて、人物の概要を推測してください。" \
-        "属性は日本語で簡潔にまとめ、推測である場合はその旨を注記し、" \
-        "JSONで出力してください。キーは display_name, probable_roles, interests, style, notable_quotes を含めてください。"
+    search_parameters = SearchParameters(
+        mode="on",
+        return_citations=True,
+        max_search_results=10,
+        sources=search_sources,
     )
 
-    payload = {
-        "model": GROK_MODEL,
-        "messages": [
-            {"role": "system", "content": "You extract public persona insights from X profiles."},
-            {"role": "user", "content": f"URL: {x_url}\n\n{prompt}"},
+    model = os.getenv("XAI_MODEL") or os.getenv("GROK_MODEL") or "grok-3-latest"
+
+    chat = client.chat.create(
+        model=model,
+        messages=[
+            system(
+                "You extract public persona insights from X profiles.",
+                "Respond in Japanese using JSON with keys: display_name, probable_roles, interests, style, notable_quotes, citations.",
+                "Mark inferred attributes with a note such as '推測'.",
+            ),
+            user(f"対象URL: {x_url}\n" "公開情報だけを使い、その人物像や関係するヒントを簡潔にまとめてください。"),
         ],
-        "temperature": 0.2,
-    }
+        temperature=0.2,
+        search_parameters=search_parameters,
+        response_format="json_object",
+    )
 
+    async def _sample() -> str:
+        response = await chat.sample()
+        return response.content
+
+    content: Optional[str] = None
     try:
-        raw = await _call_grok(payload)
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=6),
+        ):
+            with attempt:
+                content = await _sample()
+                break
     except RetryError as error:
-        raise RuntimeError(f"Grok API request failed after retries: {error}") from error
-    except httpx.HTTPError as error:
-        raise RuntimeError(f"Grok API request failed: {error}") from error
+        raise RuntimeError(f"Grok Live Search request failed after retries: {error}") from error
 
-    try:
-        content = raw["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError) as error:
-        raise RuntimeError(f"Unexpected Grok response structure: {raw}") from error
+    if content is None:
+        raise RuntimeError("Failed to retrieve response from Grok Live Search.")
 
+    # chat.sample already returns JSON when response_format="json_object".
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False)
+
+    # Ensure pretty formatting for readability.
     try:
         parsed = json.loads(content)
         payload_text = json.dumps(parsed, ensure_ascii=False, indent=2)
