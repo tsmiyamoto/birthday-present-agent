@@ -426,9 +426,7 @@ def _display_product_details_sidebar(product_data: Dict[str, Any]) -> None:
         description = product_results.get("description")
         if description:
             st.sidebar.markdown("### 📝 商品説明")
-            # 長い説明文は最初の200文字のみ表示
-            short_desc = description[:200] + "..." if len(description) > 200 else description
-            st.sidebar.markdown(short_desc)
+            st.sidebar.markdown(description)
 
     # 販売店情報
     sellers_results = product_data.get("sellers_results", {})
