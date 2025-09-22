@@ -471,6 +471,8 @@ def _render_shopping_sections(
             with header_cols[1]:
                 st.button(
                     "関連商品を見る",
+                    type="primary",
+                    icon=":material/linked_services:",
                     key=f"related_{message_index}_{section_index}",
                     on_click=_queue_related_query,
                     args=(f"{prompt_query}に関連する商品を探してください。",),
