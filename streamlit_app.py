@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 import warnings
 from html import escape
 from typing import Any, Dict, List, Optional
-import re
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from google.adk.runners import InMemoryRunner
 from google.genai.types import Part, UserContent
@@ -34,13 +35,19 @@ def _inject_custom_styles() -> None:
     st.markdown(
         """
         <style>
+        :root {
+            --primary-color: #518378;
+            --secondary-background-color: #f2f7f4;
+            --text-color: #0f172a;
+            --font: 'Inter', 'Hiragino Sans', sans-serif;
+        }
         .product-section {
-            border: 1px solid rgba(15, 118, 110, 0.15);
+            border: 1px solid rgba(81, 131, 120, 0.15);
             border-radius: 20px;
             padding: 18px 20px 20px;
             margin: 20px 0;
             background: linear-gradient(180deg, rgba(236, 253, 245, 0.4), rgba(255, 255, 255, 0.9));
-            box-shadow: 0 16px 40px -28px rgba(15, 118, 110, 0.35);
+            box-shadow: 0 16px 40px -28px rgba(81, 131, 120, 0.35);
         }
         .product-section-title {
             font-size: 1.1rem;
@@ -65,31 +72,42 @@ def _inject_custom_styles() -> None:
             padding-right: 4px;
             border-radius: 18px;
             margin-bottom: 16px;
-            background: linear-gradient(135deg, rgba(241, 245, 249, 0.9), rgba(255, 255, 255, 0.9));
-            box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.15);
         }
         .product-card-row::-webkit-scrollbar {
             height: 8px;
         }
         .product-card-row::-webkit-scrollbar-thumb {
-            background: rgba(15, 118, 110, 0.25);
+            background: rgba(81, 131, 120, 0.35);
             border-radius: 999px;
         }
         .product-card {
-            flex: 0 0 200px;
+            flex: 0 0 400px;
             border-radius: 18px;
             border: 1px solid rgba(0, 0, 0, 0.05);
-            background: #f9fafb;
+            background: #edf0ef;
             padding: 16px;
             display: flex;
             flex-direction: column;
+            gap: 12px;
+            min-height: 665px;
+            height: 730px;
+            max-height: 730px;
+            box-sizing: border-box;
+        }
+        .product-card-body {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
             gap: 10px;
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
         }
         .product-card img {
             width: 100%;
-            height: 120px;
+            aspect-ratio: 1 / 1;
+            height: auto;
             object-fit: contain;
+            box-sizing: border-box;
+            margin: 0 auto 12px;
+            padding: 12px;
             border-radius: 12px;
             background: #fff;
             border: 1px solid rgba(0,0,0,0.05);
@@ -99,7 +117,7 @@ def _inject_custom_styles() -> None:
             font-size: 0.95rem;
         }
         .product-card-price {
-            color: #0f766e;
+            color: #518378;
             font-weight: 600;
             font-size: 0.95rem;
         }
@@ -117,33 +135,50 @@ def _inject_custom_styles() -> None:
         .product-card-meta {
             font-size: 0.85rem;
             color: #6b7280;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .product-card-footer {
+            margin-top: auto;
+            display: flex;
+        }
+        .product-card-footer:empty {
+            display: none;
         }
         .product-card-button {
             display: inline-flex;
             justify-content: center;
             align-items: center;
+            width: 100%;
             padding: 8px 0;
             border-radius: 999px;
             background: #ffffff;
-            border: 1px solid rgba(15, 118, 110, 0.3);
-            color: #0f766e;
+            border: 1px solid rgba(81, 131, 120, 0.45);
+            color: #518378 !important;
             font-weight: 600;
-            text-decoration: none;
+            text-decoration: none !important;
+        }
+        .product-card-button:visited,
+        .product-card-button:focus {
+            color: #518378 !important;
+            text-decoration: none !important;
+            outline: none;
         }
         .product-card-button:hover {
-            background: rgba(15, 118, 110, 0.08);
+            background: rgba(81, 131, 120, 0.12);
+            color: #518378 !important;
         }
         .product-section .stButton button {
             border-radius: 999px;
-            background: #0f766e;
+            background: #518378;
             color: #ffffff;
-            border: none;
+            border: 1px solid rgba(81, 131, 120, 0.8);
             padding: 0.55rem 1.4rem;
             font-weight: 600;
-            box-shadow: 0 8px 18px -12px rgba(15, 118, 110, 0.9);
+            box-shadow: 0 8px 18px -12px rgba(81, 131, 120, 0.6);
         }
         .product-section .stButton button:hover {
-            background: #0e5e59;
+            background: #3f6d63;
         }
         </style>
         """,
@@ -263,7 +298,10 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
     title = escape(entry.get("title") or "名称不明")
     price = escape(_format_price(entry))
     rating = _rating_to_stars(_rating_from_position(entry.get("position")))
-    image_url = entry.get("thumbnail") or "https://via.placeholder.com/180?text=%F0%9F%8E%81"
+    image_url = (
+        entry.get("thumbnail")
+        or "https://images.unsplash.com/photo-1707944145479-12755f0434d8?q=80&w=2237&auto=format&fit=crop"
+    )
     image = escape(image_url)
     product_link = entry.get("product_link") or entry.get("serpapi_product_api")
     link_html = (
@@ -275,8 +313,6 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
     meta_lines = []
     if shipping := entry.get("shipping"):
         meta_lines.append(escape(str(shipping)))
-    if api_ref := entry.get("serpapi_product_api"):
-        meta_lines.append(f"SerpApi: {escape(api_ref)}")
     meta_html = "<div class='product-card-meta'>" + "<br/>".join(meta_lines) + "</div>" if meta_lines else ""
 
     reason_html = ""
@@ -287,8 +323,8 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
     if description := entry.get("description"):
         description_html = f"<div class='product-card-meta'>{escape(description)}</div>"
 
-    return (
-        "<div class='product-card'>"
+    body_html = (
+        "<div class='product-card-body'>"
         f"<img src='{image}' alt='{title}'/>"
         f"<div class='product-card-title'>{title}</div>"
         f"<div class='product-card-price'>{price}</div>"
@@ -296,13 +332,17 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
         f"{reason_html}"
         f"{description_html}"
         f"{meta_html}"
-        f"{link_html}"
         "</div>"
     )
+
+    footer_html = f"<div class='product-card-footer'>{link_html}</div>" if link_html else ""
+
+    return f"<div class='product-card'>{body_html}{footer_html}</div>"
 
 
 def _queue_related_query(prompt: str) -> None:
     st.session_state.next_user_input = prompt
+    st.session_state.scroll_to_bottom = True
 
 
 def _parse_agent_sections(text: str) -> List[Dict[str, Any]]:
@@ -359,9 +399,7 @@ def _parse_agent_sections(text: str) -> List[Dict[str, Any]]:
             continue
 
         if current_item is not None and last_field:
-            current_item["fields"][last_field] = (
-                current_item["fields"].get(last_field, "") + "\n" + stripped
-            ).strip()
+            current_item["fields"][last_field] = (current_item["fields"].get(last_field, "") + "\n" + stripped).strip()
         elif current_item is None:
             current_section["summary_lines"].append(line)
 
@@ -416,11 +454,7 @@ def _render_shopping_sections(message_index: int, message: Dict[str, Any]) -> No
                         unsafe_allow_html=True,
                     )
 
-            prompt_query = (
-                queries[section_index]
-                if section_index < len(queries)
-                else title
-            )
+            prompt_query = queries[section_index] if section_index < len(queries) else title
 
             with header_cols[1]:
                 st.button(
@@ -439,7 +473,9 @@ def _render_shopping_sections(message_index: int, message: Dict[str, Any]) -> No
                     "position": item_index,
                     "thumbnail": fields.get("画像URL") or fields.get("画像リンク"),
                     "product_link": fields.get("商品ページURL") or fields.get("購入リンク"),
-                    "serpapi_product_api": fields.get("serpapi_product_api") or fields.get("SerpApi") or fields.get("商品ID"),
+                    "serpapi_product_api": fields.get("serpapi_product_api")
+                    or fields.get("SerpApi")
+                    or fields.get("商品ID"),
                     "reason": fields.get("推薦理由"),
                     "description": fields.get("詳細") or fields.get("補足"),
                 }
@@ -514,6 +550,21 @@ def main() -> None:
     runner, session = _ensure_runner_and_session()
     _initialize_conversation(runner, session)
     _render_messages()
+
+    if st.session_state.pop("scroll_to_bottom", False):
+        components.html(
+            """
+            <script>
+            const mainSection = window.parent.document.querySelector('section.main');
+            if (mainSection) {
+                mainSection.scrollTo({ top: mainSection.scrollHeight, behavior: 'smooth' });
+            } else {
+                window.parent.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            }
+            </script>
+            """,
+            height=0,
+        )
 
     user_input = st.chat_input("メッセージを入力してください")
     if user_input:
