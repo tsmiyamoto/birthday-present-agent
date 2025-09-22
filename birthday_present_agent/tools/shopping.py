@@ -47,7 +47,7 @@ def _summarize_results(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {"results": results, "raw_metadata": {"total_results": raw.get("search_information", {}).get("total_results")}}
 
 
-async def shopping_search(query: str, tool_context: ToolContext) -> str:
+async def shopping_search(query: str, tool_context: ToolContext) -> Dict[str, Any]:
     """Perform a Google Shopping search via SerpApi.
 
     Args:
@@ -55,7 +55,7 @@ async def shopping_search(query: str, tool_context: ToolContext) -> str:
         tool_context: ADKツール実行時のコンテキスト。
 
     Returns:
-        JSON文字列。最大10件の候補と関連メタデータを含む。
+        辞書オブジェクト。最大10件の候補と関連メタデータを含む。
     """
     api_key = os.getenv("SERPAPI_API_KEY")
     if not api_key:
@@ -79,15 +79,15 @@ async def shopping_search(query: str, tool_context: ToolContext) -> str:
 
     summary = {"query": query, **_summarize_results(raw)}
 
-    text_payload = json.dumps(summary, ensure_ascii=False, indent=2)
-
     try:
         await tool_context.save_artifact(
             name="shopping_results",
-            artifact=types.Part.from_text(text_payload),
+            artifact=types.Part.from_text(
+                json.dumps(summary, ensure_ascii=False, indent=2)
+            ),
         )
     except Exception:
         # Artifact logging failures must not break the tool chain.
         pass
 
-    return text_payload
+    return summary
