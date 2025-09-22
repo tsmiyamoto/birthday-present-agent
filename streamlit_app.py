@@ -42,12 +42,21 @@ def _inject_custom_styles() -> None:
             --font: 'Inter', 'Hiragino Sans', sans-serif;
         }
         .product-section {
-            border: 1px solid rgba(81, 131, 120, 0.15);
-            border-radius: 20px;
-            padding: 18px 20px 20px;
-            margin: 20px 0;
-            background: linear-gradient(180deg, rgba(236, 253, 245, 0.4), rgba(255, 255, 255, 0.9));
-            box-shadow: 0 16px 40px -28px rgba(81, 131, 120, 0.35);
+            border: none;
+            border-radius: 18px;
+            padding: 16px 0;
+            margin: 26px 0;
+            background: transparent;
+            position: relative;
+        }
+        .product-section::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 18px;
+            border: 3px solid var(--primary-color);
+            opacity: 0.75;
+            pointer-events: none;
         }
         .product-section-title {
             font-size: 1.1rem;
@@ -168,18 +177,6 @@ def _inject_custom_styles() -> None:
             background: rgba(81, 131, 120, 0.12);
             color: #518378 !important;
         }
-        .product-section .stButton button {
-            border-radius: 999px;
-            background: #518378;
-            color: #ffffff;
-            border: 1px solid rgba(81, 131, 120, 0.8);
-            padding: 0.55rem 1.4rem;
-            font-weight: 600;
-            box-shadow: 0 8px 18px -12px rgba(81, 131, 120, 0.6);
-        }
-        .product-section .stButton button:hover {
-            background: #3f6d63;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -294,6 +291,16 @@ def _rating_to_stars(rating: float) -> str:
     return "★" * full + "☆" * empty
 
 
+def _extract_non_section_text(text: str) -> str:
+    if not text:
+        return ""
+    section_heading = re.compile(r"(^|\n)###\s+", re.MULTILINE)
+    match = section_heading.search(text)
+    if not match:
+        return text.strip()
+    return text[: match.start()].strip()
+
+
 def _build_product_card(entry: Dict[str, Any]) -> str:
     title = escape(entry.get("title") or "名称不明")
     price = escape(_format_price(entry))
@@ -341,7 +348,7 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
 
 
 def _queue_related_query(prompt: str) -> None:
-    st.session_state.next_user_input = prompt
+    st.session_state.prefill_message = prompt
     st.session_state.scroll_to_bottom = True
 
 
@@ -413,10 +420,15 @@ def _parse_agent_sections(text: str) -> List[Dict[str, Any]]:
     return sections
 
 
-def _render_shopping_sections(message_index: int, message: Dict[str, Any]) -> None:
-    sections = _parse_agent_sections(message.get("content", ""))
+def _render_shopping_sections(
+    message_index: int,
+    message: Dict[str, Any],
+    sections: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    if sections is None:
+        sections = _parse_agent_sections(message.get("content", ""))
     if not sections:
-        return
+        return False
 
     queries: List[str] = []
     for log in message.get("tool_logs", []):
@@ -485,6 +497,8 @@ def _render_shopping_sections(message_index: int, message: Dict[str, Any]) -> No
             st.markdown(f"<div class='product-card-row'>{cards_html}</div>", unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
+    return True
+
 
 def _initialize_conversation(runner: InMemoryRunner, session) -> None:
     if st.session_state.get("initialized"):
@@ -511,9 +525,19 @@ def _initialize_conversation(runner: InMemoryRunner, session) -> None:
 def _render_messages() -> None:
     for index, message in enumerate(st.session_state.get("messages", [])):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            content = message.get("content", "")
+            sections: List[Dict[str, Any]] = []
             if message["role"] == "assistant":
-                _render_shopping_sections(index, message)
+                sections = _parse_agent_sections(content)
+                text_to_render = _extract_non_section_text(content) if sections else content
+            else:
+                text_to_render = content
+
+            if text_to_render:
+                st.markdown(text_to_render)
+
+            if message["role"] == "assistant":
+                _render_shopping_sections(index, message, sections)
             for log in message.get("tool_logs", []):
                 label = "ツール呼び出し" if log["type"] == "call" else "ツール応答"
                 with st.expander(f"{label}: {log['name']}", expanded=False):
@@ -566,13 +590,13 @@ def main() -> None:
             height=0,
         )
 
-    user_input = st.chat_input("メッセージを入力してください")
+    if "prefill_message" in st.session_state:
+        st.session_state["chat_input"] = st.session_state.pop("prefill_message")
+
+    user_input = st.chat_input("メッセージを入力してください", key="chat_input")
     if user_input:
         _handle_user_turn(runner, session, user_input)
-
-    queued = st.session_state.pop("next_user_input", None)
-    if queued:
-        _handle_user_turn(runner, session, queued)
+        st.session_state["chat_input"] = ""
 
 
 if __name__ == "__main__":
