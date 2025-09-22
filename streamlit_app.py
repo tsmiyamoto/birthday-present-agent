@@ -184,6 +184,18 @@ def _inject_custom_styles() -> None:
             background: #fff;
             border: 1px solid rgba(0,0,0,0.05);
             box-sizing: border-box;
+            max-width: 324px;
+            max-height: 324px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .sidebar-product-image img {
+            width: 100%;
+            height: auto;
+            max-width: 300px;
+            max-height: 300px;
+            object-fit: contain;
         }
         </style>
         """,
