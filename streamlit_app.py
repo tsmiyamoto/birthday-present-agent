@@ -11,6 +11,7 @@ import warnings
 from html import escape
 from typing import Any, Dict, List, Optional
 
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
@@ -28,6 +29,7 @@ warnings.filterwarnings("ignore", message="Unclosed connector")
 load_dotenv()
 
 APP_NAME = os.getenv("ADK_APP_NAME", "birthday-present-agent")
+SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 
 
 def _inject_custom_styles() -> None:
@@ -177,6 +179,14 @@ def _inject_custom_styles() -> None:
             background: rgba(81, 131, 120, 0.12);
             color: #518378 !important;
         }
+        .sidebar-product-image {
+            margin: 12px auto;
+            padding: 12px;
+            border-radius: 12px;
+            background: #fff;
+            border: 1px solid rgba(0,0,0,0.05);
+            box-sizing: border-box;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -301,7 +311,7 @@ def _extract_non_section_text(text: str) -> str:
     return text[: match.start()].strip()
 
 
-def _build_product_card(entry: Dict[str, Any]) -> str:
+def _build_product_card(entry: Dict[str, Any], card_index: int) -> str:
     title = escape(entry.get("title") or "名称不明")
     price = escape(_format_price(entry))
     rating = _rating_to_stars(_rating_from_position(entry.get("position")))
@@ -310,12 +320,21 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
         or "https://images.unsplash.com/photo-1707944145479-12755f0434d8?q=80&w=2237&auto=format&fit=crop"
     )
     image = escape(image_url)
-    product_link = entry.get("product_link") or entry.get("serpapi_product_api")
-    link_html = (
-        f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>"
-        if product_link
-        else ""
-    )
+
+    # serpapi_product_apiがある場合は「詳しく見る」ボタンを表示
+    serpapi_url = entry.get("serpapi_product_api")
+    if serpapi_url:
+        button_key = f"detail_btn_{card_index}_{hash(serpapi_url) % 10000}"
+        # Streamlitボタンを使用するため、HTMLではなくプレースホルダーを使用
+        link_html = f"<div id='detail_button_{button_key}' class='product-card-button-placeholder'></div>"
+    else:
+        # 従来の商品ページリンク
+        product_link = entry.get("product_link")
+        link_html = (
+            f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>"
+            if product_link
+            else ""
+        )
 
     meta_lines = []
     if shipping := entry.get("shipping"):
@@ -350,6 +369,115 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
 def _queue_related_query(prompt: str) -> None:
     st.session_state.prefill_message = prompt
     st.session_state.scroll_to_bottom = True
+
+
+def _fetch_product_details(serpapi_url: str) -> Optional[Dict[str, Any]]:
+    """Fetch product details from SerpApi."""
+    if not SERPAPI_KEY:
+        st.error("SERPAPI_KEY が設定されていません")
+        return None
+
+    try:
+        # URLにapi_keyパラメータを追加
+        separator = "&" if "?" in serpapi_url else "?"
+        url_with_key = f"{serpapi_url}{separator}api_key={SERPAPI_KEY}"
+
+        response = requests.get(url_with_key, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"商品詳細の取得に失敗しました: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        st.error(f"レスポンスの解析に失敗しました: {e}")
+        return None
+
+
+def _display_product_details_sidebar(product_data: Dict[str, Any]) -> None:
+    """Display product details in sidebar."""
+    st.sidebar.markdown("## 📱 商品詳細")
+
+    # 基本情報
+    product_results = product_data.get("product_results", {})
+    if product_results:
+        title = product_results.get("title", "商品名不明")
+        st.sidebar.markdown(f"**{title}**")
+
+        # 価格情報
+        prices = product_results.get("prices", [])
+        if prices:
+            st.sidebar.markdown("### 💰 価格")
+            for price in prices[:3]:  # 最初の3つの価格を表示
+                st.sidebar.markdown(f"- {price}")
+
+        # 評価
+        rating = product_results.get("rating")
+        reviews = product_results.get("reviews")
+        if rating and reviews:
+            st.sidebar.markdown(f"### ⭐ 評価: {rating}/5.0 ({reviews:,}件)")
+
+        # 商品画像
+        media = product_results.get("media", [])
+        if media and media[0].get("type") == "image":
+            image_url = media[0]["link"]
+            st.sidebar.markdown(
+                f"""
+                <div class="sidebar-product-image">
+                    <img src="{image_url}" alt="商品画像" style="width: 100%; height: auto; object-fit: contain;">
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # 商品説明
+        description = product_results.get("description")
+        if description:
+            st.sidebar.markdown("### 📝 商品説明")
+            # 長い説明文は最初の200文字のみ表示
+            short_desc = description[:200] + "..." if len(description) > 200 else description
+            st.sidebar.markdown(short_desc)
+
+    # 販売店情報
+    sellers_results = product_data.get("sellers_results", {})
+    online_sellers = sellers_results.get("online_sellers", [])
+    if online_sellers:
+        st.sidebar.markdown("### 🏪 販売店")
+        for seller in online_sellers[:5]:  # 最初の5つの販売店を表示
+            name = seller.get("name", "販売店名不明")
+            total_price = seller.get("total_price", "価格不明")
+            direct_link = seller.get("direct_link")
+
+            if direct_link:
+                st.sidebar.markdown(f"**[{name}]({direct_link})** - {total_price}")
+            else:
+                st.sidebar.markdown(f"**{name}** - {total_price}")
+
+            # 配送情報
+            details = seller.get("details_and_offers", [])
+            if details:
+                for detail in details[:2]:  # 最初の2つの詳細情報
+                    text = detail.get("text", "")
+                    if text:
+                        st.sidebar.markdown(f"  - {text}")
+
+            st.sidebar.markdown("---")
+
+
+def _handle_product_detail_click(serpapi_url: str, product_title: str) -> None:
+    """Handle product detail button click."""
+    # セッション状態に商品詳細データを保存
+    st.session_state.current_product_title = product_title
+    st.session_state.loading_product_details = True
+    st.session_state.product_details_data = None
+
+    # 商品詳細を取得
+    product_data = _fetch_product_details(serpapi_url)
+
+    st.session_state.loading_product_details = False
+    if product_data:
+        st.session_state.product_details_data = product_data
+
+    st.rerun()
 
 
 def _parse_agent_sections(text: str) -> List[Dict[str, Any]]:
@@ -495,8 +623,22 @@ def _render_shopping_sections(
                 }
                 card_entries.append(entry)
 
-            cards_html = "".join(_build_product_card(entry) for entry in card_entries)
+            # 商品カードを表示
+            cards_html = "".join(
+                _build_product_card(entry, f"{message_index}_{section_index}_{i}")
+                for i, entry in enumerate(card_entries)
+            )
             st.markdown(f"<div class='product-card-row'>{cards_html}</div>", unsafe_allow_html=True)
+
+            # 「詳しく見る」ボタンを商品カードの下に配置
+            button_cols = st.columns(len(card_entries))
+            for i, (entry, col) in enumerate(zip(card_entries, button_cols)):
+                serpapi_url = entry.get("serpapi_product_api")
+                if serpapi_url:
+                    with col:
+                        button_key = f"detail_{message_index}_{section_index}_{i}"
+                        if st.button("詳しく見る", key=button_key, type="secondary", use_container_width=True):
+                            _handle_product_detail_click(serpapi_url, entry.get("title", "商品"))
             st.markdown("</div>", unsafe_allow_html=True)
 
     return True
@@ -575,6 +717,17 @@ def main() -> None:
     _inject_custom_styles()
     runner, session = _ensure_runner_and_session()
     _initialize_conversation(runner, session)
+
+    # サイドバーでローディング状態と商品詳細を表示
+    if st.session_state.get("loading_product_details", False):
+        st.sidebar.markdown("## 🔄 商品詳細を読み込み中...")
+        st.sidebar.markdown("少々お待ちください...")
+    elif st.session_state.get("product_details_data"):
+        _display_product_details_sidebar(st.session_state.product_details_data)
+    else:
+        st.sidebar.markdown("## 💡 使い方")
+        st.sidebar.markdown("商品カードの「詳しく見る」ボタンを押すと、詳細情報がここに表示されます。")
+
     _render_messages()
 
     if st.session_state.pop("scroll_to_bottom", False):
