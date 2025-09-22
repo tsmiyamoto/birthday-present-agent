@@ -92,7 +92,7 @@ def _inject_custom_styles() -> None:
             border-radius: 999px;
         }
         .product-card {
-            flex: 0 0 400px;
+            width: 100%;
             border-radius: 18px;
             border: 1px solid rgba(0, 0, 0, 0.05);
             background: #edf0ef;
@@ -100,9 +100,7 @@ def _inject_custom_styles() -> None:
             display: flex;
             flex-direction: column;
             gap: 12px;
-            min-height: 665px;
-            height: 730px;
-            max-height: 730px;
+            min-height: 600px;
             box-sizing: border-box;
         }
         .product-card-body {
@@ -311,7 +309,7 @@ def _extract_non_section_text(text: str) -> str:
     return text[: match.start()].strip()
 
 
-def _build_product_card(entry: Dict[str, Any], card_index: int) -> str:
+def _build_product_card(entry: Dict[str, Any]) -> str:
     title = escape(entry.get("title") or "名称不明")
     price = escape(_format_price(entry))
     rating = _rating_to_stars(_rating_from_position(entry.get("position")))
@@ -320,21 +318,6 @@ def _build_product_card(entry: Dict[str, Any], card_index: int) -> str:
         or "https://images.unsplash.com/photo-1707944145479-12755f0434d8?q=80&w=2237&auto=format&fit=crop"
     )
     image = escape(image_url)
-
-    # serpapi_product_apiがある場合は「詳しく見る」ボタンを表示
-    serpapi_url = entry.get("serpapi_product_api")
-    if serpapi_url:
-        button_key = f"detail_btn_{card_index}_{hash(serpapi_url) % 10000}"
-        # Streamlitボタンを使用するため、HTMLではなくプレースホルダーを使用
-        link_html = f"<div id='detail_button_{button_key}' class='product-card-button-placeholder'></div>"
-    else:
-        # 従来の商品ページリンク
-        product_link = entry.get("product_link")
-        link_html = (
-            f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>"
-            if product_link
-            else ""
-        )
 
     meta_lines = []
     if shipping := entry.get("shipping"):
@@ -361,9 +344,7 @@ def _build_product_card(entry: Dict[str, Any], card_index: int) -> str:
         "</div>"
     )
 
-    footer_html = f"<div class='product-card-footer'>{link_html}</div>" if link_html else ""
-
-    return f"<div class='product-card'>{body_html}{footer_html}</div>"
+    return f"<div class='product-card'>{body_html}</div>"
 
 
 def _queue_related_query(prompt: str) -> None:
@@ -623,22 +604,35 @@ def _render_shopping_sections(
                 }
                 card_entries.append(entry)
 
-            # 商品カードを表示
-            cards_html = "".join(
-                _build_product_card(entry, f"{message_index}_{section_index}_{i}")
-                for i, entry in enumerate(card_entries)
-            )
-            st.markdown(f"<div class='product-card-row'>{cards_html}</div>", unsafe_allow_html=True)
+            # 商品カードとボタンを同じカラム内に表示
+            cards_per_row = 3
+            for start in range(0, len(card_entries), cards_per_row):
+                row_entries = card_entries[start : start + cards_per_row]
+                cols = st.columns(cards_per_row)
+                for offset, entry in enumerate(row_entries):
+                    card_position = start + offset
+                    with cols[offset]:
+                        card_html = _build_product_card(entry)
+                        st.markdown(card_html, unsafe_allow_html=True)
+                        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-            # 「詳しく見る」ボタンを商品カードの下に配置
-            button_cols = st.columns(len(card_entries))
-            for i, (entry, col) in enumerate(zip(card_entries, button_cols)):
-                serpapi_url = entry.get("serpapi_product_api")
-                if serpapi_url:
-                    with col:
-                        button_key = f"detail_{message_index}_{section_index}_{i}"
-                        if st.button("詳しく見る", key=button_key, type="secondary", use_container_width=True):
-                            _handle_product_detail_click(serpapi_url, entry.get("title", "商品"))
+                        serpapi_url = entry.get("serpapi_product_api")
+                        product_link = entry.get("product_link")
+                        button_key = f"detail_{message_index}_{section_index}_{card_position}"
+
+                        if serpapi_url:
+                            if st.button(
+                                "詳しく見る",
+                                key=button_key,
+                                type="secondary",
+                                use_container_width=True,
+                            ):
+                                _handle_product_detail_click(serpapi_url, entry.get("title", "商品"))
+                        elif product_link:
+                            st.markdown(
+                                f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>",
+                                unsafe_allow_html=True,
+                            )
             st.markdown("</div>", unsafe_allow_html=True)
 
     return True
