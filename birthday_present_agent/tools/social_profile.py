@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Optional
+from urllib.parse import quote_plus
 
 from google.adk.tools import ToolContext
 from google.genai import types
@@ -28,13 +29,14 @@ async def fetch_social_profile(x_url: str, tool_context: ToolContext) -> str:
     handle = _extract_handle(x_url)
     profile_url = f"https://x.com/{handle}" if handle else x_url
     prompt = f"{profile_url} の最新100件の投稿を調べ、職業・趣味・欲しいものなどを調査してください"
+    grok_url = f"https://grok.com/?q={quote_plus(prompt)}"
 
     instructions = (
-        "Grok API の直接呼び出しを避けるため、手動で確認してください。\n"
-        "1. https://grok.com を開き、チャット画面にアクセスします。\n"
-        "2. 次のプロンプトをそのまま入力して送信します。\n\n"
-        f"{prompt}\n\n"
-        "3. Grok の回答内容をコピーし、このエージェントにペーストして共有してください。"
+        "ユーザーには次のメッセージを表示し、手動での確認を促してください。\n"
+        "X API の制限を回避するため、手動で確認してください。\n"
+        f"1. [Grokを開く]({grok_url}) をタップして、プロンプトが入力された状態の Grok チャットにアクセスします。\n"
+        "2. Grok の回答内容をコピーします。\n"
+        "3. このエージェントにペーストして共有してください。"
     )
 
     try:
