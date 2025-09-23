@@ -1,48 +1,71 @@
 # 🎁 Birthday Present Agent
 
-Google Agent Development Kit (ADK) を使って実装した誕生日プレゼント提案エージェントです。Gemini をコアモデルに据え、Grok で X(旧Twitter) の公開プロフィールを要約し、SerpApi で Google Shopping の商品情報を取得します。Streamlit UI から対話的に利用できます。
+Vertex AI Agent Engine と Google Agent Development Kit (ADK) を組み合わせて、誕生日プレゼントを提案するエージェントを構築しています。現在は以下の 3 つのモジュールを中心に運用しています。
 
-## 主要コンポーネント
-- `birthday_present_agent/agent.py` — Gemini 2.5 Flash を使ったルートエージェント定義。
-- `birthday_present_agent/prompt.py` — 会話フローとツール利用ポリシーをまとめたシステムプロンプト。
-- `birthday_present_agent/tools/` — Grok/SerpApi を呼び出すカスタムツール群。
-- `streamlit_app.py` — ADK の `InMemoryRunner` を用いたチャット UI。初回アクセス時にエージェントが会話を開始します。
+## 主な構成要素
+- `birthday_present_agent/` — Gemini 2.5 Pro を用いたルートエージェント、ツール実装、システムプロンプトを管理。
+- `streamlit_app.py` — ADK の `InMemoryRunner` でエージェントを起動し、ローカル開発用の Streamlit チャット UI を提供。
+- `streamlit-app/` — Vertex AI Agent Engine にデプロイ済みのエージェントと通信する本番想定の Streamlit UI（Cloud Run などにデプロイ可能）。
 
-## セットアップ (uv を利用)
+## セットアップ
 1. [uv](https://github.com/astral-sh/uv) をインストールします。
    ```bash
    pip install uv
    ```
-2. 依存関係を同期します (プロジェクト直下で実行)。
+2. ルートディレクトリで依存関係を同期します。
    ```bash
    uv sync
    ```
-   ※ 既存の仮想環境がある場合は `UV_ACTIVE=1` を設定するか、`uv venv` で新規に作成してから `uv pip install -r` する方法でも構いません。
-3. `.env.example` を `.env` にコピーし、以下の値を設定します。
-   - `GOOGLE_API_KEY` — Gemini API キー
-   - `GROK_API_KEY` — xAI Grok API キー
-   - `SERPAPI_API_KEY` — SerpApi キー
-   そのほか地域やモデルを変更したい場合はコメントアウトされた環境変数を必要に応じて有効化してください。
+3. `.env.example` を `.env` にコピーし、必要なキーを設定します。
+   - `GOOGLE_API_KEY` — Gemini API キー（ADK からの呼び出しに使用）
+   - `SERPAPI_API_KEY` — Google Shopping 検索用の SerpApi キー
+   - `GROK_API_KEY` — （任意）xAI Grok を直接叩く際に利用。現在は手動確認を促す運用です。
+   - `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` / `GOOGLE_CLOUD_STORAGE_BUCKET` / `GOOGLE_APPLICATION_CREDENTIALS` — Agent Engine へデプロイ・接続する場合に必須
+   - `VERTEX_AI_AGENT_ENGINE_ID` — デプロイ済み Agent Engine のリソース名
 
-## 使い方
-### Streamlit UI
-```bash
-uv run streamlit run streamlit_app.py
-```
-ブラウザで表示されるチャットから、贈る相手の職業や年齢、X プロフィールなどを伝えると候補が提示されます。興味のあるプレゼントを選ぶと詳細説明が返ってきます。
+Python 3.11.10 以上が必要です。`uv` は自動で仮想環境を管理します。
 
-### CLI (オプション)
-ADK の CLI から直接会話することもできます。
-```bash
-uv run adk run birthday_present_agent
-```
+## ローカル開発（ADK + Streamlit）
+1. `.env` で API キーを読み込める状態にします（`uv run` は自動で `.env` を反映）。
+2. ローカルで Streamlit を起動します。
+   ```bash
+   uv run streamlit run streamlit_app.py
+   ```
+3. ブラウザで表示されるチャット UI から、贈る相手の情報（職業・年齢・X プロフィール URL など）を入力すると候補が提示されます。気になる候補を選択すると、`fetch_product_details` ツールが追加情報を取得して詳細を返します。
 
-## 実装メモ
-- Grok への問い合わせは JSON 形式で人物像を返すよう指示しています。取得できなかった場合は人間に `.env` の設定を促すようエージェントに伝えています。
-- SerpApi の検索結果は最大 10 件までサマリ化し、価格・画像 URL・詳細 API のエンドポイントを返します。詳細説明時には `fetch_product_details` ツールで追加情報を取得できます。
-- Streamlit 側では ADK の `InMemoryRunner` とセッションを共有し、ツール呼び出しログを展開表示できるようにしています。
+## Vertex AI Agent Engine 連携 UI（`streamlit-app/`）
+Agent Engine にデプロイ済みのエージェントへアクセスする UI です。Cloud Run などにデプロイする前提で、サービスアカウント情報を環境変数に展開します。
 
-## 今後の拡張アイデア
-1. SerpApi のレスポンスをキャッシュし、同じ商品へのアクセスを高速化する。
-2. 予算帯やカテゴリを UI で直接指定できる補助フォームを追加する。
-3. 選んだギフトを Google カレンダーやリマインダーに登録する追加ツールを実装する。
+1. ディレクトリを移動して依存関係を同期します。
+   ```bash
+   cd streamlit-app
+   uv sync
+   ```
+2. `generate_env_yaml.sh` を使うと、サービスアカウント JSON から Cloud Run 用 `.env.yaml` を生成できます。
+   ```bash
+   ./generate_env_yaml.sh ../<service-account>.json .env.yaml
+   ```
+3. ローカルで動作確認する場合は、必要な環境変数を読み込んだ上で実行します。
+   ```bash
+   uv run streamlit run main.py --server.address 0.0.0.0 --server.port 8501
+   ```
+4. Cloud Run へデプロイする際は `uv export --format requirements.txt > requirements.txt` を実行し、`gcloud run deploy` で `Procfile` に従って起動します。
+
+期待する主な環境変数（`streamlit_app.py` と共通のものを含む）：
+- `SERPAPI_API_KEY`
+- `VERTEX_AI_AGENT_ENGINE_ID`
+- `GOOGLE_CLOUD_PROJECT`
+- `GOOGLE_CLOUD_LOCATION`
+- `VERTEXAI_SERVICE_ACCOUNT_*`（サービスアカウント JSON 由来の項目。`private_key` は `\n` を含む形で保持します）
+- `VERTEXAI_SERVICE_ACCOUNT_UNIVERSE_DOMAIN`（存在する場合）
+
+## エージェントの仕組み
+- ルートエージェント（`birthday_present_agent/agent.py`）は Gemini 2.5 Pro を使用し、ショッピング検索・商品の詳細取得・X プロフィール調査（現在は手動ガイダンス）の 3 つのツールを動的に選択します。
+- システムプロンプト（`birthday_present_agent/prompt.py`）では、ペルソナヒアリングからプレゼント候補提示までの会話フローと、各ツールの利用条件を明示。
+- `streamlit_app.py` / `streamlit-app/main.py` はツール呼び出しログを展開表示し、候補のカード表示や詳細パネルなどリッチな UI を提供します。
+
+## よくある確認ポイント
+- SerpApi のクォータを使い切ると候補が取得できません。`SERPAPI_API_KEY` を再確認してください。
+- Vertex AI 関連の環境変数が揃っていない場合、`streamlit-app/main.py` が起動時に例外を投げます。`VERTEX_AI_AGENT_ENGINE_ID`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION` とサービスアカウント情報を再設定してください。
+- Grok の自動連携は未整備のため、X プロフィール解析は UI 経由で手動入力してもらう想定です。
+
