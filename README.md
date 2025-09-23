@@ -1,4 +1,4 @@
-# 🎁 Birthday Present Agent
+# 🎁 birthd.ai [バースデイ]
 
 Vertex AI Agent Engine と Google Agent Development Kit (ADK) を組み合わせて、誕生日プレゼントを提案するエージェントを構築しています。現在は以下の 3 つのモジュールを中心に運用しています。
 

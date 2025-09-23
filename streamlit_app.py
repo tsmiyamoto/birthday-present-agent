@@ -1,4 +1,4 @@
-"""Streamlit interface for the birthday present agent."""
+"""Streamlit interface for the birthd.ai [バースデイ]."""
 
 from __future__ import annotations
 
@@ -714,9 +714,9 @@ def _handle_user_turn(runner: InMemoryRunner, session, text: str) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Birthday Present Agent", page_icon="🎁", layout="wide")
-    st.title("🎁 誕生日プレゼント提案エージェント")
-    st.caption("Google ADK + Gemini + Grok + SerpApi を活用したギフトコンシェルジュ")
+    st.set_page_config(page_title="birthd.ai [バースデイ]", page_icon="🎁", layout="wide")
+    st.title("🎁 birthd.ai [バースデイ]")
+    st.caption("Google ADK + Gemini + Grok + SerpApi を活用した誕生日プレゼント提案エージェント")
 
     _inject_custom_styles()
     runner, session = _ensure_runner_and_session()

@@ -9,12 +9,14 @@ import re
 import uuid
 import warnings
 from html import escape
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 import vertexai
+from dotenv import load_dotenv
 from google.oauth2 import service_account
 from vertexai import agent_engines
 
@@ -24,28 +26,17 @@ warnings.filterwarnings("ignore", message="Field name .* shadows an attribute in
 warnings.filterwarnings("ignore", message="Unclosed client session")
 warnings.filterwarnings("ignore", message="Unclosed connector")
 
+BASE_DIR = Path(__file__).resolve().parent
+
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()
+
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 
 AGENT_ENGINE_ID = os.getenv("VERTEX_AI_AGENT_ENGINE_ID")
 VERTEX_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 VERTEX_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION")
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-_SA_REQUIRED_ENV_VARS: Dict[str, str] = {
-    "type": "VERTEXAI_SERVICE_ACCOUNT_TYPE",
-    "project_id": "VERTEXAI_SERVICE_ACCOUNT_PROJECT_ID",
-    "private_key_id": "VERTEXAI_SERVICE_ACCOUNT_PRIVATE_KEY_ID",
-    "private_key": "VERTEXAI_SERVICE_ACCOUNT_PRIVATE_KEY",
-    "client_email": "VERTEXAI_SERVICE_ACCOUNT_CLIENT_EMAIL",
-    "client_id": "VERTEXAI_SERVICE_ACCOUNT_CLIENT_ID",
-    "auth_uri": "VERTEXAI_SERVICE_ACCOUNT_AUTH_URI",
-    "token_uri": "VERTEXAI_SERVICE_ACCOUNT_TOKEN_URI",
-    "auth_provider_x509_cert_url": "VERTEXAI_SERVICE_ACCOUNT_AUTH_PROVIDER_X509_CERT_URL",
-    "client_x509_cert_url": "VERTEXAI_SERVICE_ACCOUNT_CLIENT_X509_CERT_URL",
-}
-
-_SA_OPTIONAL_ENV_VARS: Dict[str, str] = {
-    "universe_domain": "VERTEXAI_SERVICE_ACCOUNT_UNIVERSE_DOMAIN",
-}
 
 if not AGENT_ENGINE_ID:
     raise RuntimeError("VERTEX_AI_AGENT_ENGINE_ID must be set for Agent Engine access.")
@@ -58,43 +49,8 @@ vertex_kwargs: Dict[str, Any] = {
     "location": VERTEX_LOCATION,
 }
 
-
-def _build_service_account_credentials() -> Optional[service_account.Credentials]:
-    service_account_info: Dict[str, str] = {}
-    missing_env_vars: List[str] = []
-    any_env_values = False
-
-    for field, env_name in _SA_REQUIRED_ENV_VARS.items():
-        value = os.getenv(env_name)
-        if value:
-            service_account_info[field] = value
-            any_env_values = True
-        else:
-            missing_env_vars.append(env_name)
-
-    if any_env_values:
-        if missing_env_vars:
-            missing_str = ", ".join(missing_env_vars)
-            raise RuntimeError(f"Missing Vertex AI service account environment variables: {missing_str}.")
-
-        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
-
-        for field, env_name in _SA_OPTIONAL_ENV_VARS.items():
-            value = os.getenv(env_name)
-            if value:
-                service_account_info[field] = value
-
-        return service_account.Credentials.from_service_account_info(service_account_info)
-
-    if GOOGLE_APPLICATION_CREDENTIALS:
-        return service_account.Credentials.from_service_account_file(GOOGLE_APPLICATION_CREDENTIALS)
-
-    return None
-
-
-credentials = _build_service_account_credentials()
-if credentials:
-    vertex_kwargs["credentials"] = credentials
+if GOOGLE_APPLICATION_CREDENTIALS:
+    vertex_kwargs["credentials"] = service_account.Credentials.from_service_account_file(GOOGLE_APPLICATION_CREDENTIALS)
 
 vertexai.init(**vertex_kwargs)
 remote_app = agent_engines.get(AGENT_ENGINE_ID)

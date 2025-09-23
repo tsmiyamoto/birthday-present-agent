@@ -1,4 +1,4 @@
-# Streamlit App for the Birthday Present Agent
+# Streamlit App for the birthd.ai [バースデイ]
 
 This directory contains the Streamlit UI that talks to the Vertex AI Agent Engine deployment. The app runs locally with `uv` and deploys to Cloud Run using buildpacks (via the `Procfile`).
 
