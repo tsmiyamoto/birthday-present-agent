@@ -28,7 +28,7 @@ async def fetch_social_profile(x_url: str, tool_context: ToolContext) -> str:
 
     handle = _extract_handle(x_url)
     profile_url = f"https://x.com/{handle}" if handle else x_url
-    prompt = f"{profile_url} の最新100件の投稿を調べ、職業・趣味・欲しいものなどを調査してください"
+    prompt = f"{profile_url} の投稿やプロフィールを元に、趣味・好きなもの・興味のあるもの・欲しているものなどを推測し、簡潔に回答してください"
     grok_url = f"https://grok.com/?q={quote_plus(prompt)}"
 
     instructions = (
