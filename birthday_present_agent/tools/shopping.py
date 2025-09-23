@@ -15,9 +15,7 @@ SHOPPING_ENDPOINT = os.getenv("SERPAPI_SHOPPING_ENDPOINT", "https://serpapi.com/
 
 
 async def _call_serpapi(params: Dict[str, Any]) -> Dict[str, Any]:
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6)
-    ):
+    async for attempt in AsyncRetrying(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6)):
         with attempt:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.get(SHOPPING_ENDPOINT, params=params)
@@ -38,13 +36,17 @@ def _summarize_results(raw: Dict[str, Any]) -> Dict[str, Any]:
             "product_link": item.get("product_link"),
             "thumbnail": item.get("thumbnail") or item.get("serpapi_thumbnail"),
             "serpapi_product_api": item.get("serpapi_product_api"),
+            # "serpapi_immersive_product_api": item.get("serpapi_immersive_product_api"),
             "description": item.get("excerpt") or item.get("description"),
             "shipping": item.get("delivery"),
         }
         # Remove None values for readability
         entry = {k: v for k, v in entry.items() if v}
         results.append(entry)
-    return {"results": results, "raw_metadata": {"total_results": raw.get("search_information", {}).get("total_results")}}
+    return {
+        "results": results,
+        "raw_metadata": {"total_results": raw.get("search_information", {}).get("total_results")},
+    }
 
 
 async def shopping_search(query: str, tool_context: ToolContext) -> Dict[str, Any]:
@@ -82,9 +84,7 @@ async def shopping_search(query: str, tool_context: ToolContext) -> Dict[str, An
     try:
         await tool_context.save_artifact(
             name="shopping_results",
-            artifact=types.Part.from_text(
-                json.dumps(summary, ensure_ascii=False, indent=2)
-            ),
+            artifact=types.Part.from_text(json.dumps(summary, ensure_ascii=False, indent=2)),
         )
     except Exception:
         # Artifact logging failures must not break the tool chain.
