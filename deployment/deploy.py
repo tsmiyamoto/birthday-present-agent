@@ -4,8 +4,8 @@ import argparse
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
 import vertexai
+from dotenv import load_dotenv
 from vertexai import agent_engines
 from vertexai.preview.reasoning_engines import AdkApp
 
@@ -30,8 +30,7 @@ def _find_wheel(dist_dir: Path) -> Path:
     wheels = sorted(dist_dir.glob("birthday_present_agent-*.whl"))
     if not wheels:
         raise FileNotFoundError(
-            "No wheel found in 'dist'. Build the package first "
-            "(e.g. `uv build` or `python -m build`)."
+            "No wheel found in 'dist'. Build the package first " "(e.g. `uv build` or `python -m build`)."
         )
     return wheels[-1]
 
@@ -95,10 +94,18 @@ def main() -> None:
     print(f"Uploading wheel: {wheel_path}")
     print(f"Requirement path passed to Agent Engine: {requirement_path}")
 
+    serpapi_key = os.getenv("SERPAPI_API_KEY")
+    if serpapi_key:
+        env_vars = {"SERPAPI_API_KEY": serpapi_key}
+    else:
+        print("Warning: SERPAPI_API_KEY not found in environment")
+        env_vars = {}
+
     remote_app = agent_engines.create(
         app,
         requirements=[requirement_path],
         extra_packages=[requirement_path],
+        env_vars=env_vars,
     )
     print("Agent deployment finished.")
 
