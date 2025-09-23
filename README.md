@@ -4,7 +4,7 @@
   <img src="public/birthd.ai logo.png" alt="birthd.ai logo" width="600">
 </div>
 
-Vertex AI Agent Engine と Google Agent Development Kit (ADK) を組み合わせて、誕生日プレゼントを提案するAIエージェントを構築です。3 つのモジュールを中心に運用しています。
+Vertex AI Agent Engine と Google Agent Development Kit (ADK) を組み合わせて、誕生日プレゼントを提案するAIエージェントです。3 つのモジュールを中心に運用しています。
 
 ## 主な構成要素
 - `birthday_present_agent/` — Gemini 2.5 Pro を用いたルートエージェント、ツール実装、システムプロンプトを管理。
