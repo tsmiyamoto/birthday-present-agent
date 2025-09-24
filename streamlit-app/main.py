@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -373,7 +372,8 @@ def _stream_agent_query(
                 if candidate:
                     final_text = candidate
                     preview_segments, preview_text = _extract_structured_segments(candidate)
-                    preview = preview_text or candidate
+                    preview_sections = _sections_from_segments(preview_segments)
+                    preview = preview_text or _summarize_sections(preview_sections) or candidate
                     if on_text_update:
                         on_text_update(preview)
 
@@ -400,7 +400,7 @@ def _stream_agent_query(
     final_text = final_text or "申し訳ありません、返答を生成できませんでした。"
     segments, display_text = _extract_structured_segments(final_text)
     sections = _sections_from_segments(segments)
-    normalized_text = display_text or final_text
+    normalized_text = display_text or _summarize_sections(sections) or final_text
 
     return {
         "raw_text": final_text,
@@ -436,13 +436,13 @@ def _ensure_agent_session() -> tuple[str, str]:
     return st.session_state.agent_engine_user_id, st.session_state.agent_engine_session_id
 
 
-async def _send_message(
+def _send_message(
     user_id: str,
     session_id: str,
     text: str,
     on_text_update: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
-    return await asyncio.to_thread(_stream_agent_query, user_id, session_id, text, on_text_update)
+    return _stream_agent_query(user_id, session_id, text, on_text_update)
 
 
 def _format_price(entry: Dict[str, Any]) -> str:
@@ -553,6 +553,40 @@ def _decode_unicode_escapes(value: Any) -> Any:
     return value
 
 
+def _extract_json_payload(raw_text: str) -> Optional[str]:
+    if not raw_text:
+        return None
+
+    trimmed = raw_text.strip()
+
+    if trimmed.startswith("```"):
+        trimmed = trimmed[3:]
+        if trimmed.lower().startswith("json"):
+            trimmed = trimmed[4:]
+        trimmed = trimmed.strip()
+        if trimmed.endswith("```"):
+            trimmed = trimmed[:-3]
+        trimmed = trimmed.strip()
+
+    try:
+        json.loads(trimmed)
+        return trimmed
+    except (TypeError, ValueError):
+        pass
+
+    start = trimmed.find("{")
+    end = trimmed.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = trimmed[start : end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except (TypeError, ValueError):
+            return None
+
+    return None
+
+
 def _flatten_segments(payload: Any) -> List[Dict[str, Any]]:
     segments: List[Dict[str, Any]] = []
 
@@ -571,8 +605,13 @@ def _flatten_segments(payload: Any) -> List[Dict[str, Any]]:
             segment: Dict[str, Any] = {"type": str(payload.get("type"))}
             if "content" in payload:
                 segment["content"] = payload["content"]
-            elif "text" in payload:
-                segment["content"] = payload["text"]
+            text_value = payload.get("text")
+            if text_value is not None:
+                segment["text"] = text_value
+                if "content" not in segment:
+                    segment["content"] = text_value
+            if "section" in payload:
+                segment["section"] = payload["section"]
             for meta_key in ("title", "summary", "label", "id", "metadata"):
                 if meta_key in payload:
                     segment[meta_key] = payload[meta_key]
@@ -592,8 +631,12 @@ def _extract_structured_segments(raw_text: str) -> Tuple[List[Dict[str, Any]], s
     if not raw_text:
         return [], ""
 
+    payload_text = _extract_json_payload(raw_text)
+    if payload_text is None:
+        return [], raw_text
+
     try:
-        payload = json.loads(raw_text)
+        payload = json.loads(payload_text)
     except (TypeError, ValueError, json.JSONDecodeError):
         return [], raw_text
 
@@ -603,6 +646,11 @@ def _extract_structured_segments(raw_text: str) -> Tuple[List[Dict[str, Any]], s
 
     text_parts: List[str] = []
     for segment in segments:
+        if segment.get("type") == "text":
+            text_field = segment.get("text")
+            if isinstance(text_field, str) and text_field.strip():
+                text_parts.append(text_field)
+                continue
         if segment.get("type") == "text" and isinstance(segment.get("content"), str):
             text_parts.append(segment["content"])
 
@@ -629,15 +677,39 @@ def _normalize_card_entry(card_data: Dict[str, Any], position: int) -> Dict[str,
     fields = card_data.get("fields") if isinstance(card_data.get("fields"), dict) else {}
 
     entry: Dict[str, Any] = {}
-    entry["title"] = _first_non_empty(
-        card_data,
-        ("title", "name", "商品名", "label"),
-        fields,
-    ) or f"候補 {position}"
+    entry["title"] = (
+        _first_non_empty(
+            card_data,
+            ("title", "name", "商品名", "label"),
+            fields,
+        )
+        or f"候補 {position}"
+    )
 
     entry["price"] = _first_non_empty(
         card_data,
-        ("price", "おおよその価格", "価格", "approx_price", "cost"),
+        (
+            "price",
+            "price_text",
+            "price_display",
+            "price_range",
+            "おおよその価格",
+            "価格",
+            "approx_price",
+            "cost",
+        ),
+        fields,
+    )
+
+    entry["extracted_price"] = _first_non_empty(
+        card_data,
+        (
+            "extracted_price",
+            "price_value",
+            "price_value_raw",
+            "price_number",
+            "price_numeric",
+        ),
         fields,
     )
 
@@ -685,6 +757,9 @@ def _normalize_card_entry(card_data: Dict[str, Any], position: int) -> Dict[str,
     if "position" not in normalized:
         normalized["position"] = position
 
+    if fields:
+        normalized["fields"] = fields
+
     return normalized
 
 
@@ -717,7 +792,14 @@ def _sections_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, An
 
     for segment in segments:
         seg_type = str(segment.get("type") or "").lower()
+        section_payload = segment.get("section")
         content = segment.get("content")
+
+        if section_payload and isinstance(section_payload, dict):
+            normalized = _normalize_section(section_payload, default_title=segment.get("title", ""))
+            if normalized["items"]:
+                sections.append(normalized)
+            continue
 
         if seg_type in {"product_section", "card_section", "section"} and isinstance(content, dict):
             normalized = _normalize_section(content, default_title=segment.get("title", ""))
@@ -751,6 +833,11 @@ def _sections_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, An
     return sections
 
 
+def _summarize_sections(sections: List[Dict[str, Any]]) -> str:
+    titles = [section.get("title", "").strip() for section in sections if section.get("title")]
+    return "\n\n".join(titles)
+
+
 def _render_structured_segments(
     message_index: int,
     message: Dict[str, Any],
@@ -759,19 +846,20 @@ def _render_structured_segments(
     for segment in segments:
         seg_type = str(segment.get("type") or "").lower()
         content = segment.get("content")
+        text_value = segment.get("text") if isinstance(segment.get("text"), str) else None
 
         if seg_type in {"product_section", "card_section", "cards", "card", "section", "section_list"}:
             continue
 
         if seg_type in {"text", "message"}:
-            text_value = content if isinstance(content, str) else _stringify_struct(content)
-            if text_value:
-                st.markdown(text_value)
+            display_text = text_value or (content if isinstance(content, str) else _stringify_struct(content))
+            if display_text:
+                st.markdown(display_text)
         elif seg_type == "markdown":
-            text_value = content if isinstance(content, str) else _stringify_struct(content)
-            st.markdown(text_value)
+            display_text = text_value or (content if isinstance(content, str) else _stringify_struct(content))
+            st.markdown(display_text)
         elif seg_type == "html":
-            html_value = content if isinstance(content, str) else _stringify_struct(content)
+            html_value = text_value or (content if isinstance(content, str) else _stringify_struct(content))
             st.markdown(html_value, unsafe_allow_html=True)
         elif seg_type in {"divider", "separator"}:
             st.divider()
@@ -789,7 +877,9 @@ def _render_structured_segments(
         elif seg_type in {"object", "json"}:
             st.code(_stringify_struct(content), language="json")
         else:
-            st.markdown(_stringify_struct(content))
+            fallback = text_value or _stringify_struct(content)
+            if fallback:
+                st.markdown(fallback)
 
 
 def _queue_related_query(prompt: str) -> None:
@@ -823,6 +913,11 @@ def _fetch_product_details(serpapi_url: str) -> Optional[Dict[str, Any]]:
 def _display_product_details_sidebar(product_data: Dict[str, Any]) -> None:
     """Display product details in sidebar."""
     st.sidebar.markdown("## 📱 商品詳細")
+
+    # エラーチェック
+    if st.session_state.get("product_details_error"):
+        st.sidebar.error(st.session_state.product_details_error)
+        return
 
     # 基本情報
     product_results = product_data.get("product_results", {})
@@ -894,6 +989,7 @@ def _handle_product_detail_click(serpapi_url: str, product_title: str) -> None:
     st.session_state.current_product_title = product_title
     st.session_state.loading_product_details = True
     st.session_state.product_details_data = None
+    st.session_state.product_details_error = None
 
     # 商品詳細を取得
     product_data = _fetch_product_details(serpapi_url)
@@ -901,6 +997,8 @@ def _handle_product_detail_click(serpapi_url: str, product_title: str) -> None:
     st.session_state.loading_product_details = False
     if product_data:
         st.session_state.product_details_data = product_data
+    else:
+        st.session_state.product_details_error = "取得に失敗しました。他の商品で試してみてください。"
 
     st.rerun()
 
@@ -1031,52 +1129,171 @@ def _render_shopping_sections(
                     args=(f"{prompt_query}に関連する商品を探してください。",),
                 )
 
-            card_entries: List[Dict[str, Any]] = []
-            for item_index, item in enumerate(items, start=1):
-                fields = item.get("fields", {})
-                entry: Dict[str, Any] = {
-                    "title": item.get("title") or f"候補 {item_index}",
-                    "price": fields.get("おおよその価格") or fields.get("価格"),
-                    "position": item_index,
-                    "thumbnail": fields.get("画像URL") or fields.get("画像リンク"),
-                    "product_link": fields.get("商品ページURL") or fields.get("購入リンク"),
-                    "serpapi_product_api": fields.get("serpapi_product_api")
-                    or fields.get("SerpApi")
-                    or fields.get("商品ID"),
-                    "reason": fields.get("推薦理由"),
-                    "description": fields.get("詳細") or fields.get("補足"),
-                }
-                card_entries.append(entry)
+        card_entries: List[Dict[str, Any]] = []
+        for item_index, item in enumerate(items, start=1):
+            fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
 
-            # 商品カードとボタンを同じカラム内に表示
-            cards_per_row = 3
-            for start in range(0, len(card_entries), cards_per_row):
-                row_entries = card_entries[start : start + cards_per_row]
-                cols = st.columns(cards_per_row)
-                for offset, entry in enumerate(row_entries):
-                    card_position = start + offset
-                    with cols[offset]:
-                        card_html = _build_product_card(entry)
-                        st.markdown(card_html, unsafe_allow_html=True)
-                        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            def _coalesce(keys: Tuple[str, ...], default: Optional[Any] = None) -> Any:
+                value = _first_non_empty(item, keys, fields)
 
-                        serpapi_url = entry.get("serpapi_product_api")
-                        product_link = entry.get("product_link")
-                        button_key = f"detail_{message_index}_{section_index}_{card_position}"
+                if isinstance(value, (list, tuple)):
+                    resolved = None
+                    for candidate in value:
+                        if isinstance(candidate, str) and candidate.strip():
+                            resolved = candidate
+                            break
+                        if isinstance(candidate, dict):
+                            for link_key in ("url", "link", "href"):
+                                link_value = candidate.get(link_key)
+                                if isinstance(link_value, str) and link_value.strip():
+                                    resolved = link_value
+                                    break
+                            if resolved:
+                                break
+                    value = resolved
 
-                        if serpapi_url:
-                            if st.button(
-                                "詳しく見る",
-                                key=button_key,
-                                type="secondary",
-                                use_container_width=True,
-                            ):
-                                _handle_product_detail_click(serpapi_url, entry.get("title", "商品"))
-                        elif product_link:
-                            st.markdown(
-                                f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>",
-                                unsafe_allow_html=True,
-                            )
+                if isinstance(value, dict):
+                    for link_key in ("url", "link", "href", "text"):
+                        link_value = value.get(link_key)
+                        if isinstance(link_value, str) and link_value.strip():
+                            value = link_value
+                            break
+
+                if value in (None, ""):
+                    return default
+                return value
+
+            entry: Dict[str, Any] = {
+                "title": _coalesce(("title", "name", "label", "商品名"), f"候補 {item_index}"),
+                "price": _coalesce(
+                    (
+                        "price",
+                        "price_text",
+                        "price_display",
+                        "price_range",
+                        "おおよその価格",
+                        "価格",
+                        "approx_price",
+                        "cost",
+                    )
+                ),
+                "extracted_price": _coalesce(
+                    (
+                        "extracted_price",
+                        "price_value",
+                        "price_value_raw",
+                        "price_number",
+                        "price_numeric",
+                    )
+                ),
+                "position": item.get("position") or item_index,
+                "thumbnail": _coalesce(
+                    (
+                        "thumbnail",
+                        "image",
+                        "image_url",
+                        "画像URL",
+                        "画像リンク",
+                        "thumbnail_url",
+                    )
+                ),
+                "product_link": _coalesce(
+                    (
+                        "product_link",
+                        "url",
+                        "link",
+                        "productUrl",
+                        "商品ページURL",
+                        "購入リンク",
+                        "purchase_url",
+                    )
+                ),
+                "serpapi_product_api": _coalesce(
+                    (
+                        "serpapi_product_api",
+                        "serpapi",
+                        "SerpApi",
+                        "商品ID",
+                        "serpapi_product_id",
+                    )
+                ),
+                "reason": _coalesce(("reason", "推薦理由", "justification", "why")),
+                "description": _coalesce(("description", "詳細", "補足", "notes")),
+                "shipping": _coalesce(("shipping", "送料情報", "delivery")),
+            }
+
+            if not entry.get("product_link"):
+                cta_candidate = item.get("cta")
+                if not isinstance(cta_candidate, dict):
+                    fields_cta = fields.get("cta")
+                    if not isinstance(fields_cta, dict):
+                        fields_cta = None
+                    cta_candidate = fields_cta
+                if isinstance(cta_candidate, dict):
+                    entry["product_link"] = cta_candidate.get("url") or cta_candidate.get("href")
+
+            if not entry.get("product_link") and isinstance(item.get("links"), list):
+                for link in item["links"]:
+                    if isinstance(link, dict) and link.get("url"):
+                        entry["product_link"] = link["url"]
+                        break
+
+            for key in (
+                "title",
+                "price",
+                "thumbnail",
+                "product_link",
+                "reason",
+                "description",
+                "shipping",
+                "serpapi_product_api",
+            ):
+                value = entry.get(key)
+                if value not in (None, ""):
+                    entry[key] = str(value)
+
+            if entry.get("extracted_price") not in (None, ""):
+                try:
+                    entry["extracted_price"] = float(entry["extracted_price"])
+                except (TypeError, ValueError):
+                    entry["extracted_price"] = entry["extracted_price"]
+
+            try:
+                entry["position"] = int(entry.get("position", item_index))
+            except (TypeError, ValueError):
+                entry["position"] = item_index
+
+            card_entries.append(entry)
+
+        # 商品カードとボタンを同じカラム内に表示
+        cards_per_row = 3
+        for start in range(0, len(card_entries), cards_per_row):
+            row_entries = card_entries[start : start + cards_per_row]
+            cols = st.columns(cards_per_row)
+            for offset, entry in enumerate(row_entries):
+                card_position = start + offset
+                with cols[offset]:
+                    card_html = _build_product_card(entry)
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+                    serpapi_url = entry.get("serpapi_product_api")
+                    product_link = entry.get("product_link")
+                    button_key = f"detail_{message_index}_{section_index}_{card_position}"
+
+                    if serpapi_url:
+                        if st.button(
+                            "詳しく見る",
+                            key=button_key,
+                            type="secondary",
+                            use_container_width=True,
+                        ):
+                            _handle_product_detail_click(serpapi_url, entry.get("title", "商品"))
+                    elif product_link:
+                        st.markdown(
+                            f"<a class='product-card-button' href='{escape(product_link)}' target='_blank' rel='noopener'>商品ページ</a>",
+                            unsafe_allow_html=True,
+                        )
             st.markdown("</div>", unsafe_allow_html=True)
 
     return True
@@ -1088,7 +1305,7 @@ def _initialize_conversation(user_id: str, session_id: str) -> None:
 
     st.session_state.messages = []
     try:
-        initial_response = asyncio.run(_send_message(user_id, session_id, ""))
+        initial_response = _send_message(user_id, session_id, "")
     except Exception:
         initial_response = {
             "raw_text": "",
@@ -1160,19 +1377,15 @@ def _handle_user_turn(user_id: str, session_id: str, text: str) -> None:
         preview_placeholder = st.empty()
         try:
             with st.spinner("候補を考えています..."):
-                response_data = asyncio.run(
-                    _send_message(
-                        user_id,
-                        session_id,
-                        text,
-                        on_text_update=lambda preview: preview_placeholder.markdown(preview or ""),
-                    )
+                response_data = _send_message(
+                    user_id,
+                    session_id,
+                    text,
+                    on_text_update=lambda preview: preview_placeholder.markdown(preview or ""),
                 )
         except Exception as error:
             st.error(f"エラーが発生しました: {error}")
-            preview_placeholder.markdown(
-                "申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。"
-            )
+            preview_placeholder.markdown("申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。")
             response_data = {
                 "raw_text": "",
                 "display_text": "申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。",
