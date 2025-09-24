@@ -778,10 +778,15 @@ def _display_product_details_sidebar(product_data: Dict[str, Any]) -> None:
     """Display product details in sidebar."""
     st.sidebar.markdown("## 📱 商品詳細")
 
+    # エラーチェック
+    if st.session_state.get("product_details_error"):
+        st.sidebar.error(st.session_state.product_details_error)
+        return
+
     # 基本情報
     product_results = product_data.get("product_results", {})
     if product_results:
-        title = product_results.get("title", "商品名不明")
+        title = product_results.get("title", "取得に失敗しました。他の商品でお試しください。")
         st.sidebar.markdown(f"**{title}**")
 
         # 価格情報
@@ -848,6 +853,7 @@ def _handle_product_detail_click(serpapi_url: str, product_title: str) -> None:
     st.session_state.current_product_title = product_title
     st.session_state.loading_product_details = True
     st.session_state.product_details_data = None
+    st.session_state.product_details_error = None
 
     # 商品詳細を取得
     product_data = _fetch_product_details(serpapi_url)
@@ -855,6 +861,8 @@ def _handle_product_detail_click(serpapi_url: str, product_title: str) -> None:
     st.session_state.loading_product_details = False
     if product_data:
         st.session_state.product_details_data = product_data
+    else:
+        st.session_state.product_details_error = "取得に失敗しました。他の商品で試してみてください。"
 
     st.rerun()
 
