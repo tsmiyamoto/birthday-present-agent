@@ -7,7 +7,7 @@ from .prompt import birthday_present_agent_instruction
 from .tools import fetch_product_details, fetch_social_profile, shopping_search
 
 root_agent = Agent(
-    model="gemini-2.5-flash",
+    model="gemini-2.5-pro",
     name="birthday_present_agent",
     instruction=birthday_present_agent_instruction,
     tools=[
