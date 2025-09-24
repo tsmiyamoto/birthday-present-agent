@@ -9,7 +9,7 @@ import re
 import uuid
 import warnings
 from html import escape
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 import streamlit as st
@@ -203,8 +203,14 @@ def _inject_custom_styles() -> None:
     )
 
 
-async def _send_message(runner: InMemoryRunner, session, text: str) -> tuple[str, List[Dict[str, Any]]]:
-    """Send a message to the agent and gather the final response and tool logs."""
+async def _send_message(
+    runner: InMemoryRunner,
+    session,
+    text: str,
+    on_text_update: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    """Send a message to the agent, capture structured output, and stream previews."""
+
     tool_logs: List[Dict[str, Any]] = []
     final_text = ""
 
@@ -253,18 +259,36 @@ async def _send_message(runner: InMemoryRunner, session, text: str) -> tuple[str
                 candidate = "".join(text_parts).strip()
                 if candidate:
                     final_text = candidate
+                    preview_segments, preview_text = _extract_structured_segments(candidate)
+                    preview = preview_text or candidate
+                    if on_text_update:
+                        on_text_update(preview)
 
             if getattr(event, "error_message", None):
                 final_text = event.error_message
+                if on_text_update:
+                    on_text_update(final_text)
 
             if hasattr(event, "is_final_response") and event.is_final_response():
                 break
 
-    except Exception as e:
-        # エラーハンドリングを追加
-        print(f"Error in _send_message: {e}")
+    except Exception as error:
+        print(f"Error in _send_message: {error}")
         final_text = "エラーが発生しました。"
-    return final_text, tool_logs
+        if on_text_update:
+            on_text_update(final_text)
+
+    segments, display_text = _extract_structured_segments(final_text)
+    sections = _sections_from_segments(segments)
+    normalized_text = display_text or final_text
+
+    return {
+        "raw_text": final_text,
+        "display_text": normalized_text,
+        "segments": segments,
+        "sections": sections,
+        "tool_logs": tool_logs,
+    }
 
 
 def _ensure_runner_and_session() -> tuple[InMemoryRunner, Any]:
@@ -357,6 +381,262 @@ def _build_product_card(entry: Dict[str, Any]) -> str:
     )
 
     return f"<div class='product-card'>{body_html}</div>"
+
+
+def _stringify_struct(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _ensure_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _flatten_segments(payload: Any) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]] = []
+
+    if isinstance(payload, list):
+        for item in payload:
+            segments.extend(_flatten_segments(item))
+        return segments
+
+    if isinstance(payload, dict):
+        if isinstance(payload.get("segments"), list):
+            for item in payload["segments"]:
+                segments.extend(_flatten_segments(item))
+            return segments
+
+        if "type" in payload:
+            segment: Dict[str, Any] = {"type": str(payload.get("type"))}
+            if "content" in payload:
+                segment["content"] = payload["content"]
+            elif "text" in payload:
+                segment["content"] = payload["text"]
+            for meta_key in ("title", "summary", "label", "id", "metadata"):
+                if meta_key in payload:
+                    segment[meta_key] = payload[meta_key]
+            segments.append(segment)
+            return segments
+
+        segments.append({"type": "object", "content": payload})
+        return segments
+
+    if payload is None:
+        return []
+
+    return [{"type": "text", "content": payload}]
+
+
+def _extract_structured_segments(raw_text: str) -> Tuple[List[Dict[str, Any]], str]:
+    if not raw_text:
+        return [], ""
+
+    try:
+        payload = json.loads(raw_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [], raw_text
+
+    segments = _flatten_segments(payload)
+    if not segments:
+        return [], raw_text
+
+    text_parts: List[str] = []
+    for segment in segments:
+        if segment.get("type") == "text" and isinstance(segment.get("content"), str):
+            text_parts.append(segment["content"])
+
+    display_text = "\n\n".join(part.strip() for part in text_parts if part) if text_parts else ""
+    return segments, display_text.strip()
+
+
+def _first_non_empty(
+    data: Dict[str, Any],
+    keys: Tuple[str, ...],
+    fallback: Optional[Dict[str, Any]] = None,
+):
+    for key in keys:
+        if key in data and data[key] not in (None, ""):
+            return data[key]
+    if fallback:
+        for key in keys:
+            if key in fallback and fallback[key] not in (None, ""):
+                return fallback[key]
+    return None
+
+
+def _normalize_card_entry(card_data: Dict[str, Any], position: int) -> Dict[str, Any]:
+    fields = card_data.get("fields") if isinstance(card_data.get("fields"), dict) else {}
+
+    entry: Dict[str, Any] = {}
+    entry["title"] = _first_non_empty(
+        card_data,
+        ("title", "name", "商品名", "label"),
+        fields,
+    ) or f"候補 {position}"
+
+    entry["price"] = _first_non_empty(
+        card_data,
+        ("price", "おおよその価格", "価格", "approx_price", "cost"),
+        fields,
+    )
+
+    entry["product_link"] = _first_non_empty(
+        card_data,
+        ("product_link", "url", "商品ページURL", "購入リンク", "link"),
+        fields,
+    )
+
+    entry["thumbnail"] = _first_non_empty(
+        card_data,
+        ("thumbnail", "image", "image_url", "画像URL", "画像リンク", "thumbnail_url"),
+        fields,
+    )
+
+    entry["serpapi_product_api"] = _first_non_empty(
+        card_data,
+        ("serpapi_product_api", "serpapi", "商品ID", "SerpApi", "serpapi_product_id"),
+        fields,
+    )
+
+    entry["reason"] = _first_non_empty(card_data, ("reason", "推薦理由", "justification"), fields)
+    entry["description"] = _first_non_empty(card_data, ("description", "詳細", "補足", "notes"), fields)
+    entry["shipping"] = _first_non_empty(card_data, ("shipping", "送料情報"), fields)
+
+    if not entry.get("product_link"):
+        cta = card_data.get("cta") or card_data.get("button")
+        if isinstance(cta, dict):
+            entry["product_link"] = cta.get("url") or cta.get("href")
+
+    links = card_data.get("links")
+    if not entry.get("product_link") and isinstance(links, list):
+        for link in links:
+            if isinstance(link, dict) and link.get("url"):
+                entry["product_link"] = link["url"]
+                break
+
+    position_raw = card_data.get("position")
+    try:
+        entry["position"] = int(position_raw) if position_raw is not None else position
+    except (TypeError, ValueError):
+        entry["position"] = position
+
+    normalized = {k: v for k, v in entry.items() if v not in (None, "") or k == "position"}
+    if "position" not in normalized:
+        normalized["position"] = position
+
+    return normalized
+
+
+def _normalize_section(section_data: Dict[str, Any], default_title: str = "") -> Dict[str, Any]:
+    items_source = section_data.get("items") or section_data.get("cards") or section_data.get("products")
+    items_list = _ensure_list(items_source)
+
+    normalized_items: List[Dict[str, Any]] = []
+    for idx, raw_item in enumerate(items_list, start=1):
+        if isinstance(raw_item, dict):
+            normalized = _normalize_card_entry(raw_item, idx)
+            if normalized:
+                normalized_items.append(normalized)
+
+    title_value = _first_non_empty(section_data, ("title", "name", "カテゴリ名", "heading"))
+    summary_value = _first_non_empty(section_data, ("summary", "description", "overview", "要約"))
+
+    title = str(title_value) if title_value not in (None, "") else default_title
+    summary = str(summary_value) if summary_value not in (None, "") else ""
+
+    return {
+        "title": title,
+        "summary": summary,
+        "items": normalized_items,
+    }
+
+
+def _sections_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
+
+    for index, segment in enumerate(segments):
+        seg_type = str(segment.get("type") or "").lower()
+        content = segment.get("content")
+
+        if seg_type in {"product_section", "card_section", "section"} and isinstance(content, dict):
+            normalized = _normalize_section(content, default_title=segment.get("title", ""))
+            if normalized["items"]:
+                sections.append(normalized)
+        elif seg_type in {"section_list"} and isinstance(content, list):
+            for entry in content:
+                if isinstance(entry, dict):
+                    normalized = _normalize_section(entry)
+                    if normalized["items"]:
+                        sections.append(normalized)
+        elif seg_type in {"cards", "card"}:
+            cards_list = content if isinstance(content, list) else [content]
+            normalized_cards: List[Dict[str, Any]] = []
+            for idx, card in enumerate(cards_list, start=1):
+                if isinstance(card, dict):
+                    normalized = _normalize_card_entry(card, idx)
+                    if normalized:
+                        normalized_cards.append(normalized)
+            if normalized_cards:
+                sections.append(
+                    {
+                        "title": segment.get("title") or f"提案 {len(sections) + 1}",
+                        "summary": segment.get("summary", ""),
+                        "items": normalized_cards,
+                    }
+                )
+        else:
+            continue
+
+    return sections
+
+
+def _render_structured_segments(
+    message_index: int,
+    message: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+) -> None:
+    for segment_index, segment in enumerate(segments):
+        seg_type = str(segment.get("type") or "").lower()
+        content = segment.get("content")
+
+        if seg_type in {"product_section", "card_section", "cards", "card", "section", "section_list"}:
+            continue
+
+        if seg_type in {"text", "message"}:
+            text_value = content if isinstance(content, str) else _stringify_struct(content)
+            if text_value:
+                st.markdown(text_value)
+        elif seg_type == "markdown":
+            text_value = content if isinstance(content, str) else _stringify_struct(content)
+            st.markdown(text_value)
+        elif seg_type == "html":
+            html_value = content if isinstance(content, str) else _stringify_struct(content)
+            st.markdown(html_value, unsafe_allow_html=True)
+        elif seg_type in {"divider", "separator"}:
+            st.divider()
+        elif seg_type == "code":
+            language = segment.get("language") or "text"
+            st.code(content if isinstance(content, str) else _stringify_struct(content), language=language)
+        elif seg_type in {"info", "warning", "success"}:
+            text_value = content if isinstance(content, str) else _stringify_struct(content)
+            if seg_type == "info":
+                st.info(text_value)
+            elif seg_type == "warning":
+                st.warning(text_value)
+            else:
+                st.success(text_value)
+        elif seg_type in {"object", "json"}:
+            st.code(_stringify_struct(content), language="json")
+        else:
+            st.markdown(_stringify_struct(content))
 
 
 def _queue_related_query(prompt: str) -> None:
@@ -654,17 +934,31 @@ def _initialize_conversation(runner: InMemoryRunner, session) -> None:
 
     st.session_state.messages = []
     try:
-        initial_reply, tool_logs = asyncio.run(_send_message(runner, session, ""))
+        initial_response = asyncio.run(_send_message(runner, session, ""))
     except Exception:
-        initial_reply, tool_logs = "", []
-    if (not initial_reply) or ("エラー" in initial_reply) or ("SERPAPI" in initial_reply):
-        initial_reply = "その人の職業や年齢、Xのリンクなどを教えてください。誕生日プレゼント選びをお手伝いします。"
-        tool_logs = []
+        initial_response = {
+            "raw_text": "",
+            "display_text": "",
+            "segments": [],
+            "sections": [],
+            "tool_logs": [],
+        }
+
+    display_text = initial_response.get("display_text", "")
+    if (not display_text) or ("エラー" in display_text) or ("SERPAPI" in display_text):
+        display_text = "その人の職業や年齢、Xのリンクなどを教えてください。誕生日プレゼント選びをお手伝いします。"
+        initial_response["segments"] = []
+        initial_response["sections"] = []
+        initial_response["tool_logs"] = []
+
     st.session_state.messages.append(
         {
             "role": "assistant",
-            "content": initial_reply,
-            "tool_logs": tool_logs,
+            "content": display_text,
+            "segments": initial_response.get("segments", []),
+            "sections": initial_response.get("sections", []),
+            "raw_response": initial_response.get("raw_text", display_text),
+            "tool_logs": initial_response.get("tool_logs", []),
         }
     )
     st.session_state.initialized = True
@@ -673,19 +967,28 @@ def _initialize_conversation(runner: InMemoryRunner, session) -> None:
 def _render_messages() -> None:
     for index, message in enumerate(st.session_state.get("messages", [])):
         with st.chat_message(message["role"]):
-            content = message.get("content", "")
-            sections: List[Dict[str, Any]] = []
             if message["role"] == "assistant":
-                sections = _parse_agent_sections(content)
-                text_to_render = _extract_non_section_text(content) if sections else content
+                segments: List[Dict[str, Any]] = message.get("segments", []) or []
+                rendered_sections: List[Dict[str, Any]] = []
+
+                if segments:
+                    _render_structured_segments(index, message, segments)
+                    rendered_sections = message.get("sections") or _sections_from_segments(segments)
+                    if rendered_sections:
+                        message.setdefault("sections", rendered_sections)
+                        _render_shopping_sections(index, message, rendered_sections)
+                else:
+                    content = message.get("content", "")
+                    sections = _parse_agent_sections(content)
+                    text_to_render = _extract_non_section_text(content) if sections else content
+                    if text_to_render:
+                        st.markdown(text_to_render)
+                    if sections:
+                        message.setdefault("sections", sections)
+                        _render_shopping_sections(index, message, sections)
             else:
-                text_to_render = content
+                st.markdown(message.get("content", ""))
 
-            if text_to_render:
-                st.markdown(text_to_render)
-
-            if message["role"] == "assistant":
-                _render_shopping_sections(index, message, sections)
             for log in message.get("tool_logs", []):
                 label = "ツール呼び出し" if log["type"] == "call" else "ツール応答"
                 with st.expander(f"{label}: {log['name']}", expanded=False):
@@ -696,18 +999,48 @@ def _handle_user_turn(runner: InMemoryRunner, session, text: str) -> None:
     if not text:
         return
     st.session_state.messages.append({"role": "user", "content": text})
-    with st.spinner("候補を考えています..."):
+
+    with st.chat_message("user"):
+        st.markdown(text)
+
+    response_data: Dict[str, Any]
+    with st.chat_message("assistant"):
+        preview_placeholder = st.empty()
         try:
-            reply, tool_logs = asyncio.run(_send_message(runner, session, text))
+            with st.spinner("候補を考えています..."):
+                response_data = asyncio.run(
+                    _send_message(
+                        runner,
+                        session,
+                        text,
+                        on_text_update=lambda preview: preview_placeholder.markdown(preview or ""),
+                    )
+                )
         except Exception as error:
             st.error(f"エラーが発生しました: {error}")
-            reply = "申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。"
-            tool_logs = []
+            preview_placeholder.markdown(
+                "申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。"
+            )
+            response_data = {
+                "raw_text": "",
+                "display_text": "申し訳ありません、処理中にエラーが発生しました。もう一度お試しください。",
+                "segments": [],
+                "sections": [],
+                "tool_logs": [],
+            }
+
+    preview_placeholder.markdown(response_data.get("display_text") or response_data.get("raw_text", ""))
+
     st.session_state.messages.append(
         {
             "role": "assistant",
-            "content": reply or "申し訳ありません、返答を生成できませんでした。",
-            "tool_logs": tool_logs,
+            "content": response_data.get("display_text")
+            or response_data.get("raw_text")
+            or "申し訳ありません、返答を生成できませんでした。",
+            "segments": response_data.get("segments", []),
+            "sections": response_data.get("sections", []),
+            "raw_response": response_data.get("raw_text"),
+            "tool_logs": response_data.get("tool_logs", []),
         }
     )
     st.rerun()
