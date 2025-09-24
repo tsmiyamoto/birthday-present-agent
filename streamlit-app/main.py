@@ -1417,8 +1417,18 @@ def main() -> None:
     st.caption("Google ADK + Gemini + Grok + SerpApi を活用した誕生日プレゼント提案エージェント")
 
     _inject_custom_styles()
-    user_id, session_id = _ensure_agent_session()
-    _initialize_conversation(user_id, session_id)
+
+    loading_placeholder = st.empty()
+    if not st.session_state.get("initialized"):
+        with loading_placeholder.container():
+            st.info("チャットを準備中です")
+        with st.spinner("初期メッセージを準備しています..."):
+            user_id, session_id = _ensure_agent_session()
+            _initialize_conversation(user_id, session_id)
+        loading_placeholder.empty()
+    else:
+        user_id, session_id = _ensure_agent_session()
+        _initialize_conversation(user_id, session_id)
 
     # サイドバーでローディング状態と商品詳細を表示
     if st.session_state.get("loading_product_details", False):

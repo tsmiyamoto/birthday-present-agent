@@ -1287,7 +1287,16 @@ def main() -> None:
 
     _inject_custom_styles()
     runner, session = _ensure_runner_and_session()
-    _initialize_conversation(runner, session)
+
+    loading_placeholder = st.empty()
+    if not st.session_state.get("initialized"):
+        with loading_placeholder.container():
+            st.info("チャットを準備中です")
+        with st.spinner("初期メッセージを準備しています..."):
+            _initialize_conversation(runner, session)
+        loading_placeholder.empty()
+    else:
+        _initialize_conversation(runner, session)
 
     # サイドバーでローディング状態と商品詳細を表示
     if st.session_state.get("loading_product_details", False):
